@@ -26,8 +26,8 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------*/
 
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -56,7 +56,6 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define BYTE_1  8
 #define BYTE_2  16
 #define BYTE_3  24
-#define UNUSED(x)	(void)(x)
 
 #define MAX_FILE_LENGTH    (1024)
 #define WCNSS_MAX_CMD_LEN  (128)
@@ -74,7 +73,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define WCNSS_DEVICE    "/dev/wcnss_wlan"
 #define WCNSS_CTRL      "/dev/wcnss_ctrl"
 #define WLAN_INI_FILE_DEST   "/data/misc/wifi/WCNSS_qcom_cfg.ini"
-#define WLAN_INI_FILE_SOURCE "/vendor/etc/wifi/WCNSS_qcom_cfg.ini"
+#define WLAN_INI_FILE_SOURCE "/system/etc/wifi/WCNSS_qcom_cfg.ini"
 #define WCNSS_HAS_CAL_DATA\
 		"/sys/module/wcnsscore/parameters/has_calibrated_data"
 #define WLAN_DRIVER_ATH_DEFAULT_VAL "0"
@@ -101,14 +100,13 @@ unsigned char wlan_nv_mac_addr[WLAN_ADDR_SIZE];
 #define WLAN_MAC_ADDR_STRING 18
 #endif
 
-#ifdef DYNAMIC_NV
 #define MAX_SOC_INFO_NAME_LEN (15)
 #define MAX_DATA_NVBIN_PATH_LEN (64)
 #define QRD_DYNAMIC_NV_PROP  "persist.sys.dynamic.nv"
 #define QRD_HW_PLATFORM  "QRD"
 #define QRD_PLATFORM_SUBTYPE_ID  0
 #define PERSIST_NVFILE    "/persist/WCNSS_qcom_wlan_nv.bin"
-#define DATA_NVFILE_DIR   "/system/etc/wifi/nvbin/"
+#define DATA_NVFILE_DIR   "/data/misc/wifi/nvbin/"
 #define SYSFS_SOCID_PATH1   "/sys/devices/soc0/soc_id"
 #define SYSFS_SOCID_PATH2   "/sys/devices/system/soc/soc0/id"
 #define SYSFS_HW_PLATFORM_PATH1  "/sys/devices/soc0/hw_platform"
@@ -127,7 +125,6 @@ unsigned char wlan_nv_mac_addr[WLAN_ADDR_SIZE];
 		    } \
 		    info_got = atoi(buf); \
 		}
-#endif
 
 int wcnss_write_cal_data(int fd_dev)
 {
@@ -379,9 +376,9 @@ out_nocopy:
 }
 unsigned int convert_string_to_hex(char* string)
 {
-	int idx;
+	int idx = 0;
 	unsigned long int hex_num = 0;
-	for(idx = 0; string[idx] != '\0'; idx++){
+	for(idx; string[idx] != '\0'; idx++){
 		if(isalpha(string[idx])) {
 			if(string[idx] >='a' && string[idx] <='f') {
 				hex_num = hex_num * HEX_BASE + ((int)string[idx]
@@ -400,11 +397,7 @@ unsigned int convert_string_to_hex(char* string)
 }
 
 
-#if defined(WCNSS_QMI) || defined(WCNSS_QMI_OSS)
 void setup_wcnss_parameters(int *cal, int nv_mac_addr)
-#else
-void setup_wcnss_parameters(int *cal)
-#endif
 {
 	char msg[WCNSS_MAX_CMD_LEN];
 	char serial[PROPERTY_VALUE_MAX];
@@ -548,7 +541,60 @@ int check_modem_compatability(struct dev_info *mdm_detect_info)
 }
 #endif
 
-#ifdef DYNAMIC_NV
+#ifdef WCNSS_QMI_OSS
+static void *wcnss_qmi_handle = NULL;
+static int (*wcnss_init_qmi)(void) = NULL;
+static int (*wcnss_qmi_get_wlan_address)(unsigned char *) = NULL;
+static void (*wcnss_qmi_deinit)(void) = NULL;
+
+static int setup_wcnss_qmi(void)
+{
+	const char *error = NULL;
+
+	/* initialize the DMS client and request the wlan mac address */
+	wcnss_qmi_handle = dlopen("libwcnss_qmi.so", RTLD_NOW);
+	if (!wcnss_qmi_handle) {
+		ALOGE("Failed to open libwcnss_qmi.so: %s", dlerror());
+		goto dlopen_err;
+	}
+
+	dlerror();
+
+	wcnss_init_qmi = dlsym(wcnss_qmi_handle, "wcnss_init_qmi");
+	if ((error = dlerror()) != NULL) {
+		ALOGE("Failed to resolve function: %s: %s",
+				"wcnss_init_qmi", error);
+		goto dlsym_err;
+	}
+
+	dlerror();
+
+	wcnss_qmi_get_wlan_address = dlsym(wcnss_qmi_handle,
+			"wcnss_qmi_get_wlan_address");
+	if ((error = dlerror()) != NULL) {
+		ALOGE("Failed to resolve function: %s: %s",
+				"wcnss_qmi_get_wlan_address", error);
+		goto dlsym_err;
+	}
+
+	dlerror();
+
+	wcnss_qmi_deinit = dlsym(wcnss_qmi_handle, "wcnss_qmi_deinit");
+	if ((error = dlerror()) != NULL) {
+		ALOGE("Failed to resolve function: %s: %s",
+				"wcnss_qmi_deinit", error);
+		goto dlsym_err;
+	}
+
+	return SUCCESS;
+
+dlsym_err:
+	dlclose(wcnss_qmi_handle);
+dlopen_err:
+	return FAILED;
+}
+#endif
+
 static int read_line_from_file(const char *path, char *buf, size_t count)
 {
 	char * fgets_ret;
@@ -639,6 +685,7 @@ static int get_data_nvfile_path(char *data_nvfile_path,
 static int nvbin_sendfile(const char *dst, const char *src,
 	struct stat *src_stat)
 {
+	struct utimbuf new_time;
 	int fp_src, fp_dst;
 	int rc;
 	if ((fp_src = open(src, O_RDONLY)) < 0)
@@ -658,7 +705,17 @@ static int nvbin_sendfile(const char *dst, const char *src,
 
 	if (sendfile(fp_dst, fp_src, 0, src_stat->st_size) == -1)
 	{
-		ALOGE("dynamic nv sendfile failed: (%s).\n",
+		ALOGE("dynamic nv sendfile failed.size:%ld (%s).\n",
+				src_stat->st_size, strerror(errno));
+		rc = FAILED;
+		goto exit;
+	}
+
+	new_time.actime  = src_stat->st_atime;
+	new_time.modtime = src_stat->st_mtime;
+	if (utime(dst, &new_time) != 0)
+	{
+		ALOGE("could not preserve the timestamp %s",
 				strerror(errno));
 		rc = FAILED;
 		goto exit;
@@ -727,74 +784,19 @@ void dynamic_nv_replace()
 	}
 
 	ALOGI("dynamic nv replace sucessfully!\n");
+
 }
-#endif
-
-#ifdef WCNSS_QMI_OSS
-static void *wcnss_qmi_handle = NULL;
-static int (*wcnss_init_qmi)(void) = NULL;
-static int (*wcnss_qmi_get_wlan_address)(unsigned char *) = NULL;
-static void (*wcnss_qmi_deinit)(void) = NULL;
-
-static int setup_wcnss_qmi(void)
-{
-	const char *error = NULL;
-
-	/* initialize the DMS client and request the wlan mac address */
-	wcnss_qmi_handle = dlopen("libwcnss_qmi.so", RTLD_NOW);
-	if (!wcnss_qmi_handle) {
-		ALOGE("Failed to open libwcnss_qmi.so: %s", dlerror());
-		goto dlopen_err;
-	}
-
-	dlerror();
-
-	wcnss_init_qmi = dlsym(wcnss_qmi_handle, "wcnss_init_qmi");
-	if ((error = dlerror()) != NULL) {
-		ALOGE("Failed to resolve function: %s: %s",
-				"wcnss_init_qmi", error);
-		goto dlsym_err;
-	}
-
-	dlerror();
-
-	wcnss_qmi_get_wlan_address = dlsym(wcnss_qmi_handle,
-			"wcnss_qmi_get_wlan_address");
-	if ((error = dlerror()) != NULL) {
-		ALOGE("Failed to resolve function: %s: %s",
-				"wcnss_qmi_get_wlan_address", error);
-		goto dlsym_err;
-	}
-
-	dlerror();
-
-	wcnss_qmi_deinit = dlsym(wcnss_qmi_handle, "wcnss_qmi_deinit");
-	if ((error = dlerror()) != NULL) {
-		ALOGE("Failed to resolve function: %s: %s",
-				"wcnss_qmi_deinit", error);
-		goto dlsym_err;
-	}
-
-	return SUCCESS;
-
-dlsym_err:
-	dlclose(wcnss_qmi_handle);
-dlopen_err:
-	return FAILED;
-}
-#endif
 
 int main(int argc, char *argv[])
 {
-	UNUSED(argc), UNUSED(argv);
 	int rc;
 	int fd_dev, ret_cal;
-#if defined(WCNSS_QMI) || defined(WCNSS_QMI_OSS)
 	int nv_mac_addr = FAILED;
+#ifdef WCNSS_QMI
 #ifdef MDM_DETECT
 	struct dev_info mdm_detect_info;
-	int nom = 0;
 #endif
+	int nom = 0;
 #endif
 
 	setup_wlan_config_file();
@@ -866,15 +868,9 @@ int main(int argc, char *argv[])
 nomodem:
 #endif
 
-#ifdef DYNAMIC_NV
 	dynamic_nv_replace();
-#endif
 
-#if defined(WCNSS_QMI) || defined(WCNSS_QMI_OSS)
 	setup_wcnss_parameters(&ret_cal, nv_mac_addr);
-#else
-	setup_wcnss_parameters(&ret_cal);
-#endif
 
 	fd_dev = open(WCNSS_DEVICE, O_RDWR);
 	if (fd_dev < 0) {
