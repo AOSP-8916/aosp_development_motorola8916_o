@@ -885,5 +885,5 @@ ifndef KATI
 include $(BUILD_SYSTEM)/ninja_config.mk
 include $(BUILD_SYSTEM)/soong_config.mk
 endif
-
+-include $(TOPDIR)build/make/core/qcom_target.mk
 include $(BUILD_SYSTEM)/dumpvar.mk
